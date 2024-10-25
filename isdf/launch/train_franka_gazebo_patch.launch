@@ -1,0 +1,22 @@
+<launch>
+    <arg name="live" default="true"/>
+
+    <group if="$(arg live)">
+        <!-- Launch live iSDF Franka node -->
+        <node pkg="isdf" name="isdf_train_patch" type="train_patch.py" output="screen" args="--config $(find isdf)/train/configs/realsense_franka_gazebo_patch.json">
+            <remap from="/franka/rgb" to="/realsense/color/image_raw"/>
+            <remap from="/franka/depth" to="/realsense/depth/image_rect_raw"/>
+        </node>
+    </group>
+    <group unless="$(arg live)">
+        <arg name="inc" default="false"/>
+        <group if="$(arg inc)">
+            <!-- Launch offline iSDF Franka node incremental-->
+            <node pkg="isdf" name="isdf_train" type="train_vis.py" output="screen" args="--config $(find isdf)/train/configs/realsense_franka_offline.json"/>
+        </group>
+        <group unless="$(arg inc)">
+            <!-- Launch offline iSDF Franka node batch-->
+            <node pkg="isdf" name="isdf_train" type="train_vis.py" output="screen" args="--config $(find isdf)/train/configs/realsense_franka_offline.json -ni"/>
+        </group>
+    </group>
+</launch>

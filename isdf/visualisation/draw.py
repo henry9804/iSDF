@@ -140,7 +140,7 @@ def add_im_to_vis(vis, im, reduce_factor=4):
     h = int(im.shape[0] / reduce_factor)
     w = int(im.shape[1] / reduce_factor)
     im = cv2.resize(im, (w, h))
-    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+    # im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     im = cv2.copyMakeBorder(
         im, 3, 3, 3, 3, cv2.BORDER_CONSTANT, value=[255, 255, 255])
     if vis is None:

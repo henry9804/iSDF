@@ -45,7 +45,6 @@ class Trainer():
         self.device = device
         self.incremental = incremental
         self.tot_step_time = 0.
-        self.last_is_keyframe = False
         self.steps_since_frame = 0
         self.optim_frames = 0
 
@@ -230,7 +229,6 @@ class Trainer():
         self.scale_output = self.config["model"]["scale_output"]
         # noise applied to network output
         self.noise_std = self.config["model"]["noise_std"]
-        self.noise_kf = self.config["model"]["noise_kf"]
         self.noise_frame = self.config["model"]["noise_frame"]
         # sliding window size for optimising latest frames
         self.window_size = self.config["model"]["window_size"]
@@ -240,12 +238,8 @@ class Trainer():
         # to simulate scenarios with e.g. 50% perception time, 50% planning
         self.frac_time_perception = \
             self.config["model"]["frac_time_perception"]
-        # optimisation steps per kf
-        self.iters_per_kf = self.config["model"]["iters_per_kf"]
         self.iters_per_frame = self.config["model"]["iters_per_frame"]
-        # thresholds for adding frame to keyframe set
-        self.kf_dist_th = self.config["model"]["kf_dist_th"]
-        self.kf_pixel_ratio = self.config["model"]["kf_pixel_ratio"]
+        self.eval_dist_th = self.config["model"]["kf_dist_th"]
 
         embed_config = self.config["model"]["embedding"]
         # scaling applied to coords before embedding
@@ -326,7 +320,7 @@ class Trainer():
         self.min_depth = self.config["sample"]["depth_range"][0]
         self.dist_behind_surf = self.config["sample"]["dist_behind_surf"]
         self.n_rays = self.config["sample"]["n_rays"]
-        self.n_rays_is_kf = self.config["sample"]["n_rays_is_kf"]
+        self.n_rays_eval = self.config["sample"]["n_rays_is_kf"]
         # num stratified samples per ray
         self.n_strat_samples = self.config["sample"]["n_strat_samples"]
         # num surface samples per ray
@@ -522,7 +516,6 @@ class Trainer():
                         else:
                             self.indices = np.linspace(0, n_dataset, n_views, dtype = int, endpoint= False)
             print("Frame indices", self.indices)
-            self.last_is_keyframe = True
             idxs = self.indices
             frame_data = self.get_data(idxs)
             self.add_data(frame_data)
@@ -562,37 +555,28 @@ class Trainer():
         return frames_data
 
     def add_data(self, data, replace=False):
-        # if last frame isn't a keyframe then the new frame
-        # replaces last frame in batch.
-        replace = self.last_is_keyframe is False
-
-        self.frames.add_frame_data(data, replace)
-
-        if self.last_is_keyframe:
-            print("New keyframe. KF ids:", self.frames.frame_id[:-1])
+        # the new frame replaces last frame in batch.
+        self.frames.add_frame_data(data, True)
 
     def add_frame(self, frame_data):
-        if self.last_is_keyframe:
-            self.frozen_sdf_map = copy.deepcopy(self.sdf_map)
-
         self.add_data(frame_data)
         self.steps_since_frame = 0
-        self.last_is_keyframe = False
         self.optim_frames = self.iters_per_frame
         self.noise_std = self.noise_frame
 
-    # Keyframe methods ----------------------------------
+    def eval_latest_frame(self):
+        T_WC = self.frames.T_WC_batch[-1].unsqueeze(0)
+        depth_gt = self.frames.depth_batch[-1].unsqueeze(0)
 
-    def is_keyframe(self, T_WC, depth_gt):
         sample_pts = self.sample_points(
-            depth_gt, T_WC, n_rays=self.n_rays_is_kf, dist_behind_surf=0.8)
+            depth_gt, T_WC, n_rays=self.n_rays_eval, dist_behind_surf=0.8)
 
         pc = sample_pts["pc"]
         z_vals = sample_pts["z_vals"]
         depth_sample = sample_pts["depth_sample"]
 
         with torch.set_grad_enabled(False):
-            sdf = self.frozen_sdf_map(pc, noise_std=self.noise_std)
+            sdf = self.sdf_map(pc, noise_std=self.noise_std)
 
         z_vals, ind1 = z_vals.sort(dim=-1)
         ind0 = torch.arange(z_vals.shape[0])[:, None].repeat(
@@ -603,80 +587,14 @@ class Trainer():
 
         loss = torch.abs(view_depth - depth_sample) / depth_sample
 
-        below_th = loss < self.kf_dist_th
+        below_th = loss < self.eval_dist_th
         size_loss = below_th.shape[0]
         below_th_prop = below_th.sum().float() / size_loss
-        is_keyframe = below_th_prop.item() < self.kf_pixel_ratio
 
         print(
             "Proportion of loss below threshold",
-            below_th_prop.item(),
-            "for KF should be less than",
-            self.kf_pixel_ratio,
-            " ---> is keyframe:",
-            is_keyframe
+            below_th_prop.item()
         )
-
-        return is_keyframe
-
-    def check_keyframe_latest(self):
-        """
-        returns whether or not to add a new frame.
-        """
-        add_new_frame = False
-
-        if self.last_is_keyframe:
-            # Latest frame is already a keyframe. We have now
-            # finished the extra steps and want to add a new frame
-            add_new_frame = True
-
-        else:
-            # Check if latest frame should be a keyframe.
-            T_WC = self.frames.T_WC_batch[-1].unsqueeze(0)
-            depth_gt = self.frames.depth_batch[-1].unsqueeze(0)
-            self.last_is_keyframe = self.is_keyframe(T_WC, depth_gt)
-
-            time_since_kf = self.tot_step_time - self.frames.frame_id[-2] / 30.
-            if time_since_kf > 5. and not self.live:
-                print("More than 5 seconds since last kf, so add new")
-                self.last_is_keyframe = True
-
-            if self.last_is_keyframe:
-                self.optim_frames = self.iters_per_kf
-                self.noise_std = self.noise_kf
-            else:
-                add_new_frame = True
-
-        return add_new_frame
-
-    def select_keyframes(self):
-        """
-        Use most recent two keyframes then fill rest of window
-        based on loss distribution across the remaining keyframes.
-        """
-        n_frames = len(self.frames)
-        limit = n_frames - 2
-        denom = self.frames.frame_avg_losses[:-2].sum()
-        loss_dist = self.frames.frame_avg_losses[:-2] / denom
-        loss_dist_np = loss_dist.cpu().numpy()
-
-        select_size = self.window_size - 2
-
-        rand_ints = np.random.choice(
-            np.arange(0, limit),
-            size=select_size,
-            replace=False,
-            p=loss_dist_np)
-
-        last = n_frames - 1
-        idxs = [*rand_ints, last - 1, last]
-
-        return idxs
-
-    def clear_keyframes(self):
-        self.frames = FrameData()  # keyframes
-        self.gt_depth_vis = None
-        self.gt_im_vis = None
 
     # Main training methods ----------------------------------
 
@@ -955,18 +873,8 @@ class Trainer():
         T_WC_batch = self.frames.T_WC_batch
         norm_batch = self.frames.normal_batch if self.do_normal else None
 
-        if len(self.frames) > self.window_size and self.incremental:
-            idxs = self.select_keyframes()
-            # print("selected frame ids", self.frames.frame_id[idxs[:-1]])
-        else:
-            idxs = np.arange(T_WC_batch.shape[0])
-        self.active_idxs = idxs
-
-        depth_batch = depth_batch[idxs]
-        T_WC_select = T_WC_batch[idxs]
-
         sample_pts = self.sample_points(
-            depth_batch, T_WC_select, norm_batch=norm_batch)
+            depth_batch, T_WC_batch, norm_batch=norm_batch)
         self.active_pixels = {
             'indices_b': sample_pts['indices_b'],
             'indices_h': sample_pts['indices_h'],
@@ -976,7 +884,7 @@ class Trainer():
         total_loss, losses, active_loss_approx, frame_avg_loss = \
             self.sdf_eval_and_loss(sample_pts, do_avg_loss=True)
 
-        self.frames.frame_avg_losses[idxs] = frame_avg_loss
+        self.frames.frame_avg_losses = frame_avg_loss
 
         total_loss.backward()
         self.optimiser.step()
@@ -1145,45 +1053,6 @@ class Trainer():
             elapsed = end_timing(start, end)
             print("Time for depth and normal render", elapsed)
             return rgbd_vis, render_vis, T_WC_np
-
-    def keyframe_vis(self, reduce_factor=2):
-        start, end = start_timing()
-
-        h, w = self.frames.im_batch_np.shape[1:3]
-        h = int(h / reduce_factor)
-        w = int(w / reduce_factor)
-
-        kf_vis = []
-        for i, kf in enumerate(self.frames.im_batch_np):
-            kf = cv2.resize(kf, (w, h))
-            # kf = cv2.cvtColor(kf, cv2.COLOR_BGR2RGB)
-
-            pad_color = [255, 255, 255]
-            if self.active_idxs is not None and self.active_pixels is not None:
-                if i in self.active_idxs:
-                    pad_color = [0, 0, 139]
-
-                    # show sampled pixels
-                    act_inds_mask = self.active_pixels['indices_b'] == i
-                    h_inds = self.active_pixels['indices_h'][act_inds_mask]
-                    w_inds = self.active_pixels['indices_w'][act_inds_mask]
-                    mask = np.zeros([self.H, self.W])
-                    mask[h_inds.cpu().numpy(), w_inds.cpu().numpy()] = 1
-                    mask = ndimage.binary_dilation(mask, iterations=6)
-                    mask = (mask * 255).astype(np.uint8)
-                    mask = cv2.resize(mask, (w, h)).astype(np.bool)
-                    kf[mask, :] = [0, 0, 139]
-
-            kf = cv2.copyMakeBorder(
-                kf, 3, 3, 3, 3, cv2.BORDER_CONSTANT, value=pad_color)
-            kf = cv2.copyMakeBorder(
-                kf, 3, 3, 3, 3, cv2.BORDER_CONSTANT, value=[255, 255, 255])
-            kf_vis.append(kf)
-
-        kf_vis = np.hstack(kf_vis)
-        elapsed = end_timing(start, end)
-        print("Time for kf vis", elapsed)
-        return kf_vis
 
     def frames_vis(self):
         view_depths = self.render_depth_vis()
@@ -1497,7 +1366,7 @@ class Trainer():
             colormap=True, surface_cutoff=0.01
         )
 
-    def mesh_rec(self, crop_mesh_with_pc=True):
+    def mesh_rec(self, crop_mesh_with_pc=False):
         """
         Generate mesh reconstruction.
         """

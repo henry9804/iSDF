@@ -13,7 +13,7 @@ import argparse
 import cv2
 
 from isdf import visualisation
-from isdf.modules import trainer
+from isdf.modules import trainer_wo_kf
 
 
 def train(
@@ -32,7 +32,7 @@ def train(
     save_path=None,
 ):
     # init trainer-------------------------------------------------------------
-    isdf_trainer = trainer.Trainer(
+    isdf_trainer = trainer_wo_kf.Trainer(
         device,
         config_file,
         chkpt_load_file=chkpt_load_file,
@@ -70,12 +70,6 @@ def train(
 
     last_eval = 0
 
-    # live vis init--------------------------------------------------------------
-    # if isdf_trainer.live:
-    kf_vis = None
-    # cv2.namedWindow('iSDF keyframes', cv2.WINDOW_AUTOSIZE)
-    # cv2.moveWindow("iSDF keyframes", 100, 700)
-
     # main  loop---------------------------------------------------------------
     print("Starting training for max", isdf_trainer.n_steps, "steps...")
     size_dataset = len(isdf_trainer.scene_dataset)
@@ -90,47 +84,28 @@ def train(
                 if isdf_trainer.save_slices:
                     isdf_trainer.write_slices(slice_path)
 
-                if isdf_trainer.do_eval:
-                    kf_list = isdf_trainer.frames.frame_id[:-1].tolist()
-                    res['kf_indices'] = kf_list
-                    with open(os.path.join(save_path, 'res.json'), 'w') as f:
-                        json.dump(res, f, indent=4)
-
             break
 
         # get/add data---------------------------------------------------------
         finish_optim = \
             isdf_trainer.steps_since_frame == isdf_trainer.optim_frames
         if incremental and (finish_optim or t == 0):
-            # After n steps with new frame, check whether to add it to kf set.
-            if t == 0:
-                add_new_frame = True
+            new_frame_id = isdf_trainer.get_latest_frame_id()
+            if new_frame_id >= size_dataset:
+                break_at = t + extra_opt_steps
+                print(f"**************************************",
+                        "End of sequence, runnining {extra_opt_steps} steps",
+                        "**************************************")
             else:
-                add_new_frame = isdf_trainer.check_keyframe_latest()
-
-            if add_new_frame:
-                new_frame_id = isdf_trainer.get_latest_frame_id()
-                if new_frame_id >= size_dataset:
-                    break_at = t + extra_opt_steps
-                    print(f"**************************************",
-                          "End of sequence, runnining {extra_opt_steps} steps",
-                          "**************************************")
+                if t == 0:
+                    isdf_trainer.optim_frames = 200
                 else:
-                    print("Total step time", isdf_trainer.tot_step_time)
-                    print("frame______________________", new_frame_id)
+                    isdf_trainer.eval_latest_frame()
+                print("Total step time", isdf_trainer.tot_step_time)
+                print("frame______________________", new_frame_id)
 
-                    frame_data = isdf_trainer.get_data([new_frame_id])
-                    isdf_trainer.add_frame(frame_data)
-
-                    if t == 0:
-                        isdf_trainer.last_is_keyframe = True
-                        isdf_trainer.optim_frames = 200
-
-            # if t == 0 or (isdf_trainer.last_is_keyframe and not add_new_frame):
-            #     kf_vis = visualisation.draw.add_im_to_vis(
-            #         kf_vis, isdf_trainer.frames.im_batch_np[-1], reduce_factor=6)
-            #     cv2.imshow('iSDF keyframes', kf_vis)
-            #     cv2.waitKey(1)
+                frame_data = isdf_trainer.get_data([new_frame_id])
+                isdf_trainer.add_frame(frame_data)
 
         # optimisation step---------------------------------------------
         losses, step_time = isdf_trainer.step()
@@ -179,21 +154,9 @@ def train(
             cv2.imshow('iSDF (frame rgb, depth), (rendered normals, depth)', latest_vis)
             key = cv2.waitKey(5)
 
-            # active keyframes vis
-            kf_active_vis = isdf_trainer.keyframe_vis(reduce_factor=6)
-            cv2.imshow('iSDF keyframes v2', kf_active_vis)
-            cv2.waitKey(1)
-
             if key == 115:
                 # s key to show SDF slices
                 isdf_trainer.view_sdf()
-
-            if key == 99:
-                # c key clears keyframes
-                print('Clearing keyframes...')
-                isdf_trainer.clear_keyframes()
-                kf_vis = None
-                t = 0
 
         # save ----------------------------------------------------------------
         if save and len(isdf_trainer.save_times) > 0:

@@ -17,6 +17,7 @@ import copy
 import os
 from scipy import ndimage
 from scipy.spatial import KDTree
+from scipy.linalg import logm
 
 from isdf.datasets import (
     dataset, image_transforms, sdf_util, data_util
@@ -322,6 +323,7 @@ class Trainer():
         self.weight_decay = self.config["optimiser"]["weight_decay"]
 
         # Sampling
+        self.n_patch = self.config["sample"]["n_patch"]
         self.max_depth = self.config["sample"]["depth_range"][1]
         self.min_depth = self.config["sample"]["depth_range"][0]
         self.dist_behind_surf = self.config["sample"]["dist_behind_surf"]
@@ -587,37 +589,76 @@ class Trainer():
         sample_pts = self.sample_points(
             depth_gt, T_WC, n_rays=self.n_rays_is_kf, dist_behind_surf=0.8)
 
-        pc = sample_pts["pc"]
-        z_vals = sample_pts["z_vals"]
-        depth_sample = sample_pts["depth_sample"]
+        is_keyframe = False
+        below_th_prop_list = np.zeros([self.n_patch, self.n_patch])
+        n_rays_per_patch = int(self.n_rays_is_kf / (self.n_patch * self.n_patch))
+        for i in range(self.n_patch):
+            for j in range(self.n_patch):
+                idx = i * self.n_patch + j
+                pc = sample_pts["pc"][(idx)*n_rays_per_patch:(idx+1)*n_rays_per_patch]
+                z_vals = sample_pts["z_vals"][(idx)*n_rays_per_patch:(idx+1)*n_rays_per_patch]
+                depth_sample = sample_pts["depth_sample"][(idx)*n_rays_per_patch:(idx+1)*n_rays_per_patch]
 
-        with torch.set_grad_enabled(False):
-            sdf = self.frozen_sdf_map(pc, noise_std=self.noise_std)
+                with torch.set_grad_enabled(False):
+                    sdf = self.frozen_sdf_map(pc, noise_std=self.noise_std)
 
-        z_vals, ind1 = z_vals.sort(dim=-1)
-        ind0 = torch.arange(z_vals.shape[0])[:, None].repeat(
-            1, z_vals.shape[1])
-        sdf = sdf[ind0, ind1]
+                z_vals, ind1 = z_vals.sort(dim=-1)
+                ind0 = torch.arange(z_vals.shape[0])[:, None].repeat(
+                    1, z_vals.shape[1])
+                sdf = sdf[ind0, ind1]
 
-        view_depth = render.sdf_render_depth(z_vals, sdf)
+                view_depth = render.sdf_render_depth(z_vals, sdf)
 
-        loss = torch.abs(view_depth - depth_sample) / depth_sample
+                loss = torch.abs(view_depth - depth_sample) / depth_sample
 
-        below_th = loss < self.kf_dist_th
-        size_loss = below_th.shape[0]
-        below_th_prop = below_th.sum().float() / size_loss
-        is_keyframe = below_th_prop.item() < self.kf_pixel_ratio
+                below_th = loss < self.kf_dist_th
+                size_loss = below_th.shape[0]
+                below_th_prop = below_th.sum().float() / size_loss
+                is_keyframe = is_keyframe or below_th_prop.item() < self.kf_pixel_ratio
+                below_th_prop_list[i,j] = below_th_prop.item()
 
         print(
-            "Proportion of loss below threshold",
-            below_th_prop.item(),
-            "for KF should be less than",
+            "Proportion of loss below threshold\n",
+            below_th_prop_list,
+            "\nfor KF should be less than",
             self.kf_pixel_ratio,
             " ---> is keyframe:",
             is_keyframe
         )
 
         return is_keyframe
+    
+    def remove_invalid_keyframe(self):
+        ##################### TODO #####################
+        # remove keyframe based on reconstruction loss #
+        ################################################
+        print("---------------------------------")
+        print("Check if past keyframes are valid")
+        num_keyframe = len(self.frames)
+        if num_keyframe == 0:
+            return
+        valid_keyframe = []
+        for i in range(num_keyframe-1):
+            T_WC = self.frames.T_WC_batch[i].unsqueeze(0)
+            depth_gt = self.frames.depth_batch[i].unsqueeze(0)
+            print(f'frame {self.frames.frame_id[i]}:')
+            if not self.is_keyframe(T_WC, depth_gt):
+                valid_keyframe.append(i)
+        valid_keyframe.append(num_keyframe-1)
+        
+        self.frames.frame_id = self.frames.frame_id[valid_keyframe]
+        self.frames.im_batch = self.frames.im_batch[valid_keyframe]
+        self.frames.im_batch_np = self.frames.im_batch_np[valid_keyframe]
+        self.frames.depth_batch = self.frames.depth_batch[valid_keyframe]
+        self.frames.depth_batch_np = self.frames.depth_batch_np[valid_keyframe]
+        self.frames.T_WC_batch = self.frames.T_WC_batch[valid_keyframe]
+        self.frames.T_WC_batch_np = self.frames.T_WC_batch_np[valid_keyframe]
+        self.frames.normal_batch = self.frames.normal_batch[valid_keyframe]
+        self.frames.frame_avg_losses = self.frames.frame_avg_losses[valid_keyframe]
+        if self.frames.T_WC_gt:
+            self.frames.T_WC_gt = self.frames.T_WC_gt[valid_keyframe]
+        print("---------------------------------")
+        ################################################
 
     def check_keyframe_latest(self):
         """
@@ -636,12 +677,37 @@ class Trainer():
             depth_gt = self.frames.depth_batch[-1].unsqueeze(0)
             self.last_is_keyframe = self.is_keyframe(T_WC, depth_gt)
 
-            time_since_kf = self.tot_step_time - self.frames.frame_id[-2] / 30.
-            if time_since_kf > 5. and not self.live:
-                print("More than 5 seconds since last kf, so add new")
-                self.last_is_keyframe = True
-
             if self.last_is_keyframe:
+                ##################### TODO #####################
+                #     remove keyframe based on camera pose     #
+                ################################################
+                # num_keyframe = len(self.frames)
+                # valid_keyframe = []
+                # rotm_ref = self.frames.T_WC_batch_np[-1, :3, :3]
+                # pos_ref = self.frames.T_WC_batch_np[-1, :3, 3]
+                # for i in range(num_keyframe-1):
+                #     rotm = self.frames.T_WC_batch_np[i, :3, :3]
+                #     pos = self.frames.T_WC_batch_np[i, :3, 3]
+                #     skew = logm(np.matmul(np.transpose(rotm_ref), rotm))
+                #     rot_err = np.linalg.norm([skew[2,1], skew[0,2], skew[1,0]])
+                #     pos_err = np.linalg.norm(pos_ref - pos)
+                #     print(f'{i}: {pos_err}, {rot_err}')
+                #     if pos_err > 0.25 or rot_err > 0.25:
+                #         valid_keyframe.append(i)
+                # valid_keyframe.append(num_keyframe-1)
+                # self.frames.frame_id = self.frames.frame_id[valid_keyframe]
+                # self.frames.im_batch = self.frames.im_batch[valid_keyframe]
+                # self.frames.im_batch_np = self.frames.im_batch_np[valid_keyframe]
+                # self.frames.depth_batch = self.frames.depth_batch[valid_keyframe]
+                # self.frames.depth_batch_np = self.frames.depth_batch_np[valid_keyframe]
+                # self.frames.T_WC_batch = self.frames.T_WC_batch[valid_keyframe]
+                # self.frames.T_WC_batch_np = self.frames.T_WC_batch_np[valid_keyframe]
+                # self.frames.normal_batch = self.frames.normal_batch[valid_keyframe]
+                # self.frames.frame_avg_losses = self.frames.frame_avg_losses[valid_keyframe]
+                # if self.frames.T_WC_gt:
+                #     self.frames.T_WC_gt = self.frames.T_WC_gt[valid_keyframe]
+                ################################################
+
                 self.optim_frames = self.iters_per_kf
                 self.noise_std = self.noise_kf
             else:
@@ -707,7 +773,7 @@ class Trainer():
         n_frames = depth_batch.shape[0]
         if active_loss_approx is None:
             indices_b, indices_h, indices_w = sample.sample_pixels(
-                n_rays, n_frames, self.H, self.W, device=self.device)
+                n_rays, n_frames, self.H, self.W, device=self.device, n_patch=self.n_patch)
         else:
             # indices_b, indices_h, indices_w = \
             #     active_sample.active_sample_pixels(
@@ -955,6 +1021,9 @@ class Trainer():
         T_WC_batch = self.frames.T_WC_batch
         norm_batch = self.frames.normal_batch if self.do_normal else None
 
+        # TODO
+        # if self.last_is_keyframe:
+            # idxs = [T_WC_batch.shape[0] - 1]
         if len(self.frames) > self.window_size and self.incremental:
             idxs = self.select_keyframes()
             # print("selected frame ids", self.frames.frame_id[idxs[:-1]])
@@ -1159,12 +1228,28 @@ class Trainer():
             # kf = cv2.cvtColor(kf, cv2.COLOR_BGR2RGB)
 
             pad_color = [255, 255, 255]
+
+            mask = np.zeros([self.H, self.W])
+            for j in range(1, self.n_patch):
+                for k in range(1, self.n_patch):
+                    h_inds = np.arange(self.H)
+                    w_inds = np.ones_like(h_inds) * int(self.W / self.n_patch) * j
+                    mask[h_inds, w_inds] = 1
+                    w_inds = np.arange(self.W)
+                    h_inds = np.ones_like(w_inds) * int(self.H / self.n_patch) * k
+                    mask[h_inds, w_inds] = 1
+            mask = ndimage.binary_dilation(mask, iterations=2)
+            mask = (mask * 255).astype(np.uint8)
+            mask = cv2.resize(mask, (w, h)).astype(np.bool)
+            kf[mask, :] = [139, 0, 0]
+
             if self.active_idxs is not None and self.active_pixels is not None:
                 if i in self.active_idxs:
                     pad_color = [0, 0, 139]
 
                     # show sampled pixels
-                    act_inds_mask = self.active_pixels['indices_b'] == i
+                    b = list(self.active_idxs).index(i)
+                    act_inds_mask = self.active_pixels['indices_b'] == b
                     h_inds = self.active_pixels['indices_h'][act_inds_mask]
                     w_inds = self.active_pixels['indices_w'][act_inds_mask]
                     mask = np.zeros([self.H, self.W])

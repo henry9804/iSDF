@@ -13,7 +13,7 @@ import argparse
 import cv2
 
 from isdf import visualisation
-from isdf.modules import trainer
+from isdf.modules import trainer_patch
 
 
 def train(
@@ -32,7 +32,7 @@ def train(
     save_path=None,
 ):
     # init trainer-------------------------------------------------------------
-    isdf_trainer = trainer.Trainer(
+    isdf_trainer = trainer_patch.Trainer(
         device,
         config_file,
         chkpt_load_file=chkpt_load_file,
@@ -109,6 +109,7 @@ def train(
                 add_new_frame = isdf_trainer.check_keyframe_latest()
 
             if add_new_frame:
+                isdf_trainer.remove_invalid_keyframe()
                 new_frame_id = isdf_trainer.get_latest_frame_id()
                 if new_frame_id >= size_dataset:
                     break_at = t + extra_opt_steps

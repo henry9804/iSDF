@@ -1,0 +1,113 @@
+{
+    "dataset": {
+        "format": "realsense_franka",
+        "depth_scale": 1.0,
+        "camera": {
+            "w": 680,
+            "h": 480,
+            "fx": 358.2839686653547,
+            "fy": 358.2839686653547,
+            "cx": 340.5,
+            "cy": 240.5,
+            "k1": 0.0,
+            "k2": 0.0,
+            "p1": 0.0,
+            "p2": 0.0,
+            "k3,": 0.0
+        }
+    },
+    "eval": {
+        "do_vox_comparison": 0,
+        "eval_pts_root": "/mnt/datasets/data/eval_pts/",
+        "do_eval": 0,
+        "eval_freq_s": 1,
+        "sdf_eval": 1,
+        "mesh_eval": 0
+    },
+    "save": {
+        "save_period": 10,
+        "save_checkpoints": 0,
+        "save_slices": 0,
+        "save_meshes": 0
+    },
+
+    "optimiser": {
+        "lr": 0.0004,
+        "weight_decay": 0.012
+    },
+    "trainer": {
+        "steps": 20000
+    },
+    "sample": {
+        "n_patch": 4,
+        "n_rays": 208,
+        "n_rays_is_kf": 1600,
+        "n_strat_samples": 19,
+        "n_surf_samples": 8,
+        "_depth_range": "[0.6, 6.0] for D455, [0.3, 3.0] for D435 ",
+        "depth_range": [0.3, 3.0],
+        "dist_behind_surf": 0.1
+    },
+    "model": {
+        "refine_poses": 0,
+        "do_active": 0,
+        "frac_time_perception": 1.0,
+        "scale_output": 0.14,
+        "noise_std": 0.025,
+        "noise_kf": 0.08,
+        "noise_frame": 0.04,
+        "window_size": 5,
+        "hidden_layers_block": 2,
+        "hidden_feature_size": 256,
+        "iters_per_kf": 100,
+        "iters_per_frame": 10,
+        "kf_dist_th": 0.1,
+        "kf_pixel_ratio": 0.65,
+        "embedding": {
+            "scale_input": 0.4,
+            "n_embed_funcs": 8,
+            "gauss_embed": 0,
+            "gauss_embed_std": 11,
+            "optim_embedding": 0
+        }
+    },
+    "loss": {
+        "bounds_method": "pc",
+        "loss_type": "L1",
+        "trunc_weight": 30.0,
+        "trunc_distance": 0.1,
+        "eik_weight": 0.268,
+        "eik_apply_dist": 0.1,
+        "grad_weight": 0.018,
+        "orien_loss": 0
+    },
+    "pose_refine": {
+        "pose_lr": 0.0004
+    },
+    "ext_calib" : [
+        {
+            "camera_ee_ori": [
+                [ 0.0439119, -0.9988769, 0.0177955],
+                [ 0.9990284,  0.0439713, 0.0029631],
+                [-0.0037423,  0.0176481, 0.9998373]
+            ],
+            "camera_ee_ori_rotvec": [
+                0.0112222,
+                0.0164591,
+                1.5267921
+            ],
+            "camera_ee_pos": [
+                0.0492,
+                -0.0136,
+                0.0594
+            ]
+        }
+    ],
+    "workspace": {
+        "_comment": "Robot based is (0, 0, 0), X: breadth of table, Y: length of table, Z: height, _rotate_z: 0 for normal, 180 for flipped, _offset: transformation to the base [-0.5, 0.0, 0.0] for both  _center: [0.5, 0.0, 0.0] for normal,  [-0.5, 0.0, 0.0] for flipped, _extents: size of the table",
+        "rotate_z": 0,
+        "offset":   [-0.5, 0.25, -0.7],
+        "center":   [0.5, 0.0, 0.0],
+        "extents":  [1.0, 1.5, 0.6]
+    }
+}

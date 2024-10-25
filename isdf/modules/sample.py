@@ -9,11 +9,21 @@ from isdf.geometry import transform
 
 
 def sample_pixels(
-    n_rays, n_frames, h, w, device
+    n_rays, n_frames, h, w, device, n_patch=1
 ):
-    total_rays = n_rays * n_frames
-    indices_h = torch.randint(0, h, (total_rays,), device=device)
-    indices_w = torch.randint(0, w, (total_rays,), device=device)
+    patch_h = int(h/n_patch)
+    patch_w = int(w/n_patch)
+    n_rays_per_patch = int(n_rays / (n_patch * n_patch))
+    indices_h = []
+    indices_w = []
+    for _ in range(n_frames):
+        for i in range(n_patch):
+            for j in range(n_patch):
+                indices_h.append(torch.randint(i*patch_h, (i+1)*patch_h, (n_rays_per_patch,), device=device))
+                indices_w.append(torch.randint(j*patch_w, (j+1)*patch_w, (n_rays_per_patch,), device=device))
+    
+    indices_h = torch.concat(indices_h)
+    indices_w = torch.concat(indices_w)
 
     indices_b = torch.arange(n_frames, device=device)
     indices_b = indices_b.repeat_interleave(n_rays)
