@@ -488,7 +488,7 @@ class Trainer():
             ims_file = None
             self.traj_file = None
         elif self.dataset_format in ["realsense", "realsense_franka"]:
-            dataset_class = dataset.ROSSubscriber
+            dataset_class = dataset.ROSSubscriber2
             col_ext = None
             self.up = np.array([0., 0., 1.])
             ims_file =  self.ext_calib # extrinsic calib 

@@ -337,6 +337,96 @@ class ROSSubscriber(Dataset):
                 }
                 return sample
 
+# Consume RGBD + pose data from ROS node
+class ROSSubscriber2(Dataset):
+    def __init__(
+        self,
+        extrinsic_calib=None,
+        root_dir=None,
+        traj_file=None,
+        keep_ixs=None,
+        rgb_transform=None,
+        depth_transform=None,
+        noisy_depth=False,
+        col_ext=None,
+        distortion_coeffs=None,
+        camera_matrix=None,
+    ):
+        crop = False
+        self.rgb_transform = rgb_transform
+        self.depth_transform = depth_transform
+
+        self.distortion_coeffs = np.array(distortion_coeffs)
+        self.camera_matrix = camera_matrix
+
+        torch.multiprocessing.set_start_method('spawn', force=True)
+        # self.queue = torch.multiprocessing.Queue(maxsize=1)
+        
+        self.data_queue = torch.multiprocessing.Queue(maxsize=1)
+        self.status_queue = torch.multiprocessing.Queue(maxsize=1)
+        
+        print("ROSSubscriber")
+        if extrinsic_calib is not None:
+            process = torch.multiprocessing.Process(
+                target=node.iSDFFrankaNode2,
+                # args=(self.queue, crop, extrinsic_calib),
+                args=(self.data_queue, self.status_queue, crop, extrinsic_calib),
+            ) # subscribe to franka poses 
+        else:
+            process = torch.multiprocessing.Process(
+                target=node.iSDFNode,
+                # args=(self.queue, crop),
+                args=(self.data_queue, self.status_queue, crop),
+            ) # subscribe to ORB-SLAM backend
+
+        process.start()
+
+    def __len__(self):
+        return 1000000000
+
+    def __getitem__(self, idx):
+        data = None
+        status = None
+        while data is None:
+            # data = node.get_latest_frame(self.queue)
+            data = node.get_latest_frame(self.data_queue)
+            status = node.get_latest_frame(self.status_queue)
+            if data is not None:
+                image, depth, Twc = data
+                # image, depth, Twc = data["image"], data["depth"], data["T"]
+                goal_reached = False
+                start_command = False
+                if status is not None:
+                    goal_reached = status.get("goal_reached", False)
+                    start_command = status.get("start_command", False)
+                if self.rgb_transform:
+                    image = self.rgb_transform(image)
+                if self.depth_transform:
+                    depth = self.depth_transform(depth)
+
+                    # undistort depth, using nn rather than linear interpolation
+                    img_size = (depth.shape[1], depth.shape[0])
+                    map1, map2 = cv2.initUndistortRectifyMap(
+                        self.camera_matrix, self.distortion_coeffs, np.eye(3),
+                        self.camera_matrix, img_size, cv2.CV_32FC1)
+                    depth = cv2.remap(depth, map1, map2, cv2.INTER_NEAREST)
+                    
+                # sample = {
+                #     "image": image,
+                #     "depth": depth,
+                #     "T": Twc,
+                #     # "goal" : goal_reached,
+                #     # "start": start_command
+                # }
+                # return sample
+                sample = {
+                    "image": image,
+                    "depth": depth,
+                    "T": Twc,
+                    "goal": goal_reached,
+                    "start": start_command
+                }
+                return sample
 
 # Consume RGBD + pose data from an IOS device with a Lidar
 # class ARKit(Dataset):

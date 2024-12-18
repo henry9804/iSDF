@@ -16,7 +16,7 @@ import cv2
 # from orb_slam3_ros_wrapper.msg import frame
 import message_filters
 import tf
-from sensor_msgs.msg import Image # ROS message type
+from sensor_msgs.msg import Image, Bool # ROS message type
 from geometry_msgs.msg import Pose # ROS message type
 from matplotlib import pyplot as plt
 """ 
@@ -207,6 +207,145 @@ class iSDFFrankaNode:
         camera_world_rot = rot @ cam_ee_rot
         return camera_world_pos, camera_world_rot
 
+class iSDFFrankaNode2:
+    def __init__(self, queue, status_queue, crop=False, ext_calib = None) -> None:
+        print("iSDF Franka Node: starting", os.getpid())
+        print("Waiting for first frame...")
+
+        self.queue = queue
+        self.status_queue = status_queue  # status_queue 추가
+        self.crop = crop
+        self.camera_transform = None 
+
+        self.cal = ext_calib
+
+        self.rgb, self.depth, self.pose = None, None, None
+
+        self.first_pose_inv = None
+
+        rospy.init_node("isdf_franka")
+
+        self.tf_listener = tf.TransformListener()
+        image_sub = message_filters.Subscriber("/franka/rgb", Image)
+        depth_sub = message_filters.Subscriber("/franka/depth", Image)
+        ts = message_filters.TimeSynchronizer([image_sub, depth_sub], 10)
+        ts.registerCallback(self.sync_callback)
+        print("isdffrankanode initialize")
+        # rospy.Subscriber("/franka/rgb", Image, self.main_callback, queue_size=1)
+        # rospy.Subscriber("/franka/depth", Image, self.depth_callback, queue_size=1)
+        # rospy.Subscriber("/franka/pose", Pose, self.pose_callback, queue_size=1)
+        
+        
+        # self.goal_reached = False
+        # self.start_command = False
+        rospy.Subscriber('/robot/goal_reached', Bool, self.goal_reached_callback)
+        rospy.Subscriber('/isdf/start', Bool, self.start_callback)
+        # print("iSDFFrankaNode initialized and subscribers set.")
+        rospy.spin()
+
+    
+    def goal_reached_callback(self, msg):
+        self.goal_reached = msg.data
+        # print(f"Goal reached: {self.goal_reached}")
+        status_packet = {"goal_reached": msg.data}
+        try:
+            self.status_queue.put(status_packet, block=False)
+        except queue.Full:
+            pass
+        # status_packet = {"goal_reached": False}
+
+    def start_callback(self, msg):
+        self.start_command = msg.data
+        # print(f"Start command received: {self.start_command}")
+        status_packet = {"start_command": msg.data}
+        try:
+            self.status_queue.put(status_packet, block=False)
+        except queue.Full:
+            pass
+        # status_packet = {"start_command": False}
+        # 상태 업데이트 후 필요한 로직 추가 가능
+        
+    def sync_callback(self, color_msg, depth_msg):
+        rgb_np = np.frombuffer(color_msg.data, dtype=np.uint8)
+        rgb_np = rgb_np.reshape(color_msg.height, color_msg.width, 3)
+        rgb_np = rgb_np[..., ::-1]
+        self.rgb = rgb_np
+        del rgb_np
+
+        depth_np = np.frombuffer(depth_msg.data, dtype=np.float32)
+        depth_np = depth_np.reshape(depth_msg.height, depth_msg.width)
+        depth_np = np.where(np.isnan(depth_np), 0.1, depth_np)
+        self.depth = depth_np
+        del depth_np
+
+        try:
+            trans, quat = self.tf_listener.lookupTransform(target_frame="world", source_frame="panda_hand", time=rospy.Time(0))
+        except:
+            return
+        rot = Rotation.from_quat(quat).as_matrix()
+        trans, rot = self.ee_to_cam(trans, rot)
+        camera_transform = np.concatenate((rot, trans.reshape((3, 1))), axis=1)
+        camera_transform = np.vstack((camera_transform, [0.0, 0.0, 0.0, 1.0]))
+        self.pose = camera_transform
+
+        try:
+            self.queue.put(
+                (self.rgb.copy(), self.depth.copy(), self.pose.copy()),
+                block=False,
+            )
+        except queue.Full:
+            pass
+
+    def main_callback(self, msg):
+        # main callback is RGB, and uses the latest depth + pose 
+        # TODO: subscribe to single msg type that contains (image, depth, pose)
+        rgb_np = np.frombuffer(msg.data, dtype=np.uint8)
+        rgb_np = rgb_np.reshape(msg.height, msg.width, 3)
+        rgb_np = rgb_np[..., ::-1]
+        self.rgb = cv2.resize(rgb_np, (1280, 720), interpolation=cv2.INTER_AREA)
+        
+        del rgb_np
+
+        if self.depth is None or self.pose is None: 
+            return
+        # self.show_rgbd(self.rgb, self.depth, 0)
+
+        try:
+            self.queue.put(
+                (self.rgb.copy(), self.depth.copy(), self.pose.copy()),
+                block=False,
+            )
+        except queue.Full:
+            pass
+        
+    def depth_callback(self, msg):
+        depth_np = np.frombuffer(msg.data, dtype=np.uint16)
+        depth_np = depth_np.reshape(msg.height, msg.width)
+        self.depth = cv2.resize(depth_np, (1280, 720), interpolation=cv2.INTER_AREA)
+        del depth_np
+
+    def pose_callback(self, msg):
+        position = msg.position
+        quat = msg.orientation
+        trans = np.asarray([position.x, position.y, position.z])
+        rot = Rotation.from_quat([quat.x, quat.y, quat.z, quat.w]).as_matrix()
+        trans, rot = self.ee_to_cam(trans, rot)
+        camera_transform = np.concatenate((rot, trans.reshape((3, 1))), axis=1)
+        camera_transform = np.vstack((camera_transform, [0.0, 0.0, 0.0, 1.0]))
+        self.pose = camera_transform
+
+        del camera_transform
+
+    def ee_to_cam(self, trans, rot):
+        # transform the inverse kinematics EE pose to the realsense pose
+        cam_ee_pos = np.array(self.cal[0]['camera_ee_pos'])
+        cam_ee_rot = np.array(self.cal[0]['camera_ee_ori_rotvec'])
+        cam_ee_rot = Rotation.from_rotvec(cam_ee_rot).as_matrix()
+
+        camera_world_pos = trans + rot @ cam_ee_pos
+        camera_world_rot = rot @ cam_ee_rot
+        return camera_world_pos, camera_world_rot
+    
 def show_rgbd(rgb, depth, timestamp):
     plt.clf()
     plt.subplot(2, 1, 1)
