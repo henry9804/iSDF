@@ -16,7 +16,8 @@ import cv2
 # from orb_slam3_ros_wrapper.msg import frame
 import message_filters
 import tf
-from sensor_msgs.msg import Image, Bool # ROS message type
+from std_msgs.msg import Bool # ROS message type
+from sensor_msgs.msg import Image # ROS message type
 from geometry_msgs.msg import Pose # ROS message type
 from matplotlib import pyplot as plt
 """ 
