@@ -22,7 +22,6 @@ isdf/modules/pose_trainer.py
 isdf/modules/active_sample.py
 isdf/modules/exp_modules.py
 
-isdf/train/train_pose.py
 isdf/train/batch_train/param_sweep.py
 isdf/train/batch_train/jobs.py
 isdf/train/configs/best_params.json
@@ -164,3 +163,5 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+.vscode/

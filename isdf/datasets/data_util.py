@@ -76,10 +76,57 @@ class FrameData:
         if data.T_WC_gt is not None:
             self.T_WC_gt = expand_data(
                 self.T_WC_gt, data.T_WC_gt, replace)
+    
+    def exchange_frame_data(self, framedata, index):
+        # existing_T_WC_batch_np = self.frames.T_WC_batch_np
+        # index = self.find_matching_index(existing_T_WC_batch_np, framedata.T_WC_batch_np[0])
+        
+        # self.frames.frame_id[index] = framedata.frame_id[0]
+        # self.frames.im_batch[index] = framedata.im_batch[0]
+        # self.frames.im_batch_np[index] = framedata.im_batch_np[0]
+        # self.frames.depth_batch[index] = framedata.depth_batch[0]
+        # self.frames.depth_batch_np[index] = framedata.depth_batch_np[0]
+        # self.frames.T_WC_batch[index] = framedata.T_WC_batch[0]
+        # self.frames.T_WC_batch_np[index] = framedata.T_WC_batch_np[0]
+        # self.frames.normal_batch[index] = framedata.normal_batch[0]
+        
+        self.frame_id = exchange_data(self.frame_id, framedata.frame_id, index)
+        self.im_batch = exchange_data(self.im_batch, framedata.im_batch, index)
+        self.im_batch_np = exchange_data(self.im_batch_np, framedata.im_batch_np, index)
+        self.depth_batch = exchange_data(self.depth_batch, framedata.depth_batch, index)
+        self.depth_batch_np = exchange_data(self.depth_batch_np, framedata.depth_batch_np, index)
+        self.T_WC_batch = exchange_data(self.T_WC_batch, framedata.T_WC_batch, index)
+        self.T_WC_batch_np = exchange_data(self.T_WC_batch_np, framedata.T_WC_batch_np, index)
+        self.normal_batch = exchange_data(self.normal_batch, framedata.normal_batch, index)
+        
+        device = framedata.im_batch.device
+        # empty_dist = torch.zeros([framedata.im_batch.shape[0]], device=device)
+        # self.frame_avg_losses = exchange_data(self.frame_avg_losses, empty_dist, index)
+        
+        if framedata.T_WC_gt is not None:
+            self.T_WC_gt = exchange_data(
+                self.T_WC_gt, framedata.T_WC_gt, index)
 
     def __len__(self):
+        # print(f"FrameData __len__: {len(self.frame_id)}")
         return 0 if self.frame_id is None else len(self.frame_id)
 
+
+def exchange_data(batch, data, index):
+    """
+    Exchange new data with existing data at index.
+    """
+    if torch.is_tensor(batch) and torch.is_tensor(data):
+        batch[index] = data[0]  # Replace the specific index in torch.Tensor
+    elif isinstance(batch, np.ndarray) and isinstance(data, np.ndarray):
+        batch[index] = data[0]  # Replace the specific index in numpy.ndarray
+        
+    if batch is None:
+        batch = data
+    
+    batch[index] = data[0]
+
+    return batch
 
 def expand_data(batch, data, replace=False):
     """
